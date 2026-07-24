@@ -1,0 +1,119 @@
+import requests
+import vk_api
+import random
+from vk_api.bot_longpoll import CHAT_START_ID, VkBotLongPoll, VkBotEventType
+
+VK_TOKEN = ""
+GROUP_ID = 
+vk_session = vk_api.VkApi(token=VK_TOKEN)
+vk = vk_session.get_api()
+longpoll = VkBotLongPoll(vk_session, GROUP_ID)
+
+API_KEY = ""
+URL = "https://openrouter.ai/api/v1/chat/completions"
+MODEL = "openrouter/free"
+system_prompt = "ты - дружелюбный помощник, который помогает пользователю с проблемами. отвечай коротко и понятно."
+user_message = input("задай вопрос ИИ: ")
+chat_history = {}
+state = {}
+MAX_VK_MESSAGE_LENGTH = 4000
+user_histories = {}
+
+def send_message(user_id,text):
+    if not text:
+        return
+    if len(text) <= MAX_VK_MESSAGE_LENGTH:
+        vk.messages.send(
+            user_id=user_id,
+            message=text,
+            random_id=random.randint(1,2**31 - 1)
+        )
+        return
+    for i in range(0, len(text), MAX_VK_MESSAGE_LENGTH):
+        chunk = text[i:i + MAX_VK_MESSAGE_LENGTH]
+        vk.messages.send(
+            user_id=user_id,
+            message=text,
+            random_id=random.randint(1,2**31 - 1)
+        )
+        return
+
+def ask_ai(user_id,message):
+    history = chat_history.setdefault(user_id,[])
+    history.append({"role": "user", "content": message})
+
+    try:
+        response = requests.post(
+            URL,
+            headers={
+                "authorization": f"Bearer {API_KEY}",
+                "Сontent-Tyre": "application/json"
+            }, 
+            json={
+                "model": MODEL,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    *history
+        ],},
+            timeout = 60)
+        data = response.json()
+    except requests.RequestException as e:
+        history.pop()
+        return f"Ошибка соединения: {e}"
+
+    if response.status_code != 200 or "choices" not in data or len(data["choices"]) ==0:
+        history.pop()
+        error_msg = data.get("error",{})
+        if isinstance(error_msg, dict):
+            msg = error_msg.get("message", "ошибка")
+        else:
+            msg = str(error_msg) if error_msg else "ошибка"
+        return f"ошибка:{msg}"
+
+    try:
+        answer = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        history.pop()
+        return "ошибка при разборе ответа от ИИ"
+
+    if not answer:
+        history.pop()
+        return "пустой ответ от ИИ"
+
+    history.append({"role": "assistant", "content": answer})
+    if len(history) > 10:
+        chat_history[user_id] = history[-10:]
+
+        return answer
+    if user_id not in user_histories:
+        user_histories[user_id] = []
+
+    user_histories[user_id].append({
+        "role": "user",
+        "content": message
+    })
+
+    history = user_histories[user_id][-10:]
+
+def reset_dialog(user_id):
+    chat_history.pop(user_id,None)
+    state.pop(user_id,None)
+
+print("Бот запущен. Ожидаю сообщения...")
+
+    
+for event in longpoll.listen():
+    if event.type == VkBotEventType.MESSAGE_NEW:
+        msg = event.object.message
+        user_id = msg["peer_id"]
+        text = msg["text"].strip()
+
+        if not text:
+            continue
+
+        if text.lower().startswith("/reset"):
+            reset_dialog(user_id)
+            send_message(user_id, "Диалог сброшен")
+            continue
+        answer = ask_ai(user_id,text)
+        send_message(user_id, "привет! всегда готов помочь тебе в любых вопросах.Спрашивай)")
